@@ -88,7 +88,7 @@ class DataFormatter(JSONSerializable):
             DataType.OPENAPI: OpenAPILoader,
             DataType.GMAIL: GmailLoader,
         }
-        lazy_loaders = {DataType.NOTION}
+        lazy_loaders = {DataType.NOTION, DataType.GMAIL}
         if data_type in loaders:
             loader_class: type = loaders[data_type]
             loader: BaseLoader = loader_class()
@@ -98,6 +98,10 @@ class DataFormatter(JSONSerializable):
                 from embedchain.loaders.notion import NotionLoader
 
                 return NotionLoader()
+            elif data_type == DataType.GMAIL:
+                from embedchain.loaders.gmail import GmailLoader
+
+                return GmailLoader()
             else:
                 raise ValueError(f"Unsupported data type: {data_type}")
         else:
@@ -131,7 +135,7 @@ class DataFormatter(JSONSerializable):
             DataType.UNSTRUCTURED: UnstructuredFileChunker,
             DataType.JSON: JSONChunker,
             DataType.OPENAPI: OpenAPIChunker,
-            DataType.JSON: GmailChunker,
+            DataType.GMAIL: GmailChunker,
         }
         if data_type in chunker_classes:
             chunker_class: type = chunker_classes[data_type]
