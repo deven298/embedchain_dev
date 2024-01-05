@@ -1,3 +1,3 @@
 streamlit
-embedchain==0.1.41a0
+embedchain
 pysqlite3-binary
