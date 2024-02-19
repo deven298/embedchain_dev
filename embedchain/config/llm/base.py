@@ -1,45 +1,66 @@
 import logging
 import re
 from string import Template
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from embedchain.config.base_config import BaseConfig
 from embedchain.helpers.json_serializable import register_deserializable
 
 DEFAULT_PROMPT = """
-  Use the following pieces of context to answer the query at the end.
-  If you don't know the answer, just say that you don't know, don't try to make up an answer.
+You are a Q&A expert system. Your responses must always be rooted in the context provided for each query. Here are some guidelines to follow:
 
-  $context
+1. Refrain from explicitly mentioning the context provided in your response.
+2. The context should silently guide your answers without being directly acknowledged.
+3. Do not use phrases such as 'According to the context provided', 'Based on the context, ...' etc.
 
-  Query: $query
+Context information:
+----------------------
+$context
+----------------------
 
-  Helpful Answer:
+Query: $query
+Answer:
 """  # noqa:E501
 
 DEFAULT_PROMPT_WITH_HISTORY = """
-  Use the following pieces of context to answer the query at the end.
-  If you don't know the answer, just say that you don't know, don't try to make up an answer.
-  I will provide you with our conversation history.
+You are a Q&A expert system. Your responses must always be rooted in the context provided for each query. You are also provided with the conversation history with the user. Make sure to use relevant context from conversation history as needed.
 
-  $context
+Here are some guidelines to follow:
 
-  History: $history
+1. Refrain from explicitly mentioning the context provided in your response.
+2. The context should silently guide your answers without being directly acknowledged.
+3. Do not use phrases such as 'According to the context provided', 'Based on the context, ...' etc.
 
-  Query: $query
+Context information:
+----------------------
+$context
+----------------------
 
-  Helpful Answer:
+Conversation history:
+----------------------
+$history
+----------------------
+
+Query: $query
+Answer:
 """  # noqa:E501
 
 DOCS_SITE_DEFAULT_PROMPT = """
-  Use the following pieces of context to answer the query at the end.
-  If you don't know the answer, just say that you don't know, don't try to make up an answer. Wherever possible, give complete code snippet. Dont make up any code snippet on your own.
+You are an expert AI assistant for developer support product. Your responses must always be rooted in the context provided for each query. Wherever possible, give complete code snippet. Dont make up any code snippet on your own.
 
-  $context
+Here are some guidelines to follow:
 
-  Query: $query
+1. Refrain from explicitly mentioning the context provided in your response.
+2. The context should silently guide your answers without being directly acknowledged.
+3. Do not use phrases such as 'According to the context provided', 'Based on the context, ...' etc.
 
-  Helpful Answer:
+Context information:
+----------------------
+$context
+----------------------
+
+Query: $query
+Answer:
 """  # noqa:E501
 
 DEFAULT_PROMPT_TEMPLATE = Template(DEFAULT_PROMPT)
@@ -68,10 +89,12 @@ class BaseLlmConfig(BaseConfig):
         stream: bool = False,
         deployment_name: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        where: Dict[str, Any] = None,
+        where: dict[str, Any] = None,
         query_type: Optional[str] = None,
-        callbacks: Optional[List] = None,
+        callbacks: Optional[list] = None,
         api_key: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        model_kwargs: Optional[dict[str, Any]] = None,
     ):
         """
         Initializes a configuration class instance for the LLM.
@@ -104,9 +127,17 @@ class BaseLlmConfig(BaseConfig):
         :param system_prompt: System prompt string, defaults to None
         :type system_prompt: Optional[str], optional
         :param where: A dictionary of key-value pairs to filter the database results., defaults to None
-        :type where: Dict[str, Any], optional
+        :type where: dict[str, Any], optional
+        :param api_key: The api key of the custom endpoint, defaults to None
+        :type api_key: Optional[str], optional
+        :param endpoint: The api url of the custom endpoint, defaults to None
+        :type endpoint: Optional[str], optional
+        :param model_kwargs: A dictionary of key-value pairs to pass to the model, defaults to None
+        :type model_kwargs: Optional[Dict[str, Any]], optional
         :param callbacks: Langchain callback functions to use, defaults to None
-        :type callbacks: Optional[List], optional
+        :type callbacks: Optional[list], optional
+        :param query_type: The type of query to use, defaults to None
+        :type query_type: Optional[str], optional
         :raises ValueError: If the template is not valid as template should
         contain $context and $query (and optionally $history)
         :raises ValueError: Stream is not boolean
@@ -132,8 +163,10 @@ class BaseLlmConfig(BaseConfig):
         self.query_type = query_type
         self.callbacks = callbacks
         self.api_key = api_key
+        self.endpoint = endpoint
+        self.model_kwargs = model_kwargs
 
-        if type(prompt) is str:
+        if isinstance(prompt, str):
             prompt = Template(prompt)
 
         if self.validate_prompt(prompt):
@@ -146,24 +179,26 @@ class BaseLlmConfig(BaseConfig):
         self.stream = stream
         self.where = where
 
-    def validate_prompt(self, prompt: Template) -> bool:
+    @staticmethod
+    def validate_prompt(prompt: Template) -> Optional[re.Match[str]]:
         """
         validate the prompt
 
         :param prompt: the prompt to validate
         :type prompt: Template
         :return: valid (true) or invalid (false)
-        :rtype: bool
+        :rtype: Optional[re.Match[str]]
         """
         return re.search(query_re, prompt.template) and re.search(context_re, prompt.template)
 
-    def _validate_prompt_history(self, prompt: Template) -> bool:
+    @staticmethod
+    def _validate_prompt_history(prompt: Template) -> Optional[re.Match[str]]:
         """
         validate the prompt with history
 
         :param prompt: the prompt to validate
         :type prompt: Template
         :return: valid (true) or invalid (false)
-        :rtype: bool
+        :rtype: Optional[re.Match[str]]
         """
         return re.search(history_re, prompt.template)

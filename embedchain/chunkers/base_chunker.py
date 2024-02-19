@@ -17,7 +17,7 @@ class BaseChunker(JSONSerializable):
         """
         Loads data and chunks it.
 
-        :param loader: The loader which's `load_data` method is used to create
+        :param loader: The loader whose `load_data` method is used to create
         the raw data.
         :param src: The data to be handled by the loader. Can be a URL for
         remote sources or local content for local loaders.
@@ -25,9 +25,9 @@ class BaseChunker(JSONSerializable):
         """
         documents = []
         chunk_ids = []
-        idMap = {}
+        id_map = {}
         min_chunk_size = config.min_chunk_size if config is not None else 1
-        logging.info(f"[INFO] Skipping chunks smaller than {min_chunk_size} characters")
+        logging.info(f"Skipping chunks smaller than {min_chunk_size} characters")
         data_result = loader.load_data(src)
         data_records = data_result["data"]
         doc_id = data_result["doc_id"]
@@ -39,21 +39,24 @@ class BaseChunker(JSONSerializable):
         for data in data_records:
             content = data["content"]
 
-            meta_data = data["meta_data"]
+            metadata = data["meta_data"]
             # add data type to meta data to allow query using data type
-            meta_data["data_type"] = self.data_type.value
-            meta_data["doc_id"] = doc_id
-            url = meta_data["url"]
+            metadata["data_type"] = self.data_type.value
+            metadata["doc_id"] = doc_id
+
+            # TODO: Currently defaulting to the src as the url. This is done intentianally since some
+            # of the data types like 'gmail' loader doesn't have the url in the meta data.
+            url = metadata.get("url", src)
 
             chunks = self.get_chunks(content)
             for chunk in chunks:
                 chunk_id = hashlib.sha256((chunk + url).encode()).hexdigest()
                 chunk_id = f"{app_id}--{chunk_id}" if app_id is not None else chunk_id
-                if idMap.get(chunk_id) is None and len(chunk) >= min_chunk_size:
-                    idMap[chunk_id] = True
+                if id_map.get(chunk_id) is None and len(chunk) >= min_chunk_size:
+                    id_map[chunk_id] = True
                     chunk_ids.append(chunk_id)
                     documents.append(chunk)
-                    metadatas.append(meta_data)
+                    metadatas.append(metadata)
         return {
             "documents": documents,
             "ids": chunk_ids,
@@ -77,5 +80,6 @@ class BaseChunker(JSONSerializable):
 
         # TODO: This should be done during initialization. This means it has to be done in the child classes.
 
-    def get_word_count(self, documents):
+    @staticmethod
+    def get_word_count(documents) -> int:
         return sum([len(document.split(" ")) for document in documents])

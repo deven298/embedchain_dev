@@ -1,6 +1,7 @@
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Optional, Union
 
 from langchain.callbacks.stdout import StdOutCallbackHandler
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
@@ -25,7 +26,8 @@ class GPT4ALLLlm(BaseLlm):
     @staticmethod
     def _get_instance(model):
         try:
-            from langchain.llms.gpt4all import GPT4All as LangchainGPT4All
+            from langchain_community.llms.gpt4all import \
+                GPT4All as LangchainGPT4All
         except ModuleNotFoundError:
             raise ModuleNotFoundError(
                 "The GPT4All python package is not installed. Please install it with `pip install --upgrade embedchain[opensource]`"  # noqa E501

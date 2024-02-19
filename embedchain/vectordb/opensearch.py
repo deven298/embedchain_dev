@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Optional, Union
 
 from tqdm import tqdm
 
@@ -12,8 +12,8 @@ except ImportError:
         "OpenSearch requires extra dependencies. Install with `pip install --upgrade embedchain[opensearch]`"
     ) from None
 
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.vectorstores import OpenSearchVectorSearch
+from langchain_community.embeddings.openai import OpenAIEmbeddings
+from langchain_community.vectorstores import OpenSearchVectorSearch
 
 from embedchain.config import OpenSearchDBConfig
 from embedchain.helpers.json_serializable import register_deserializable
@@ -78,17 +78,17 @@ class OpenSearchDB(BaseVectorDB):
         """Note: nothing to return here. Discuss later"""
 
     def get(
-        self, ids: Optional[List[str]] = None, where: Optional[Dict[str, any]] = None, limit: Optional[int] = None
-    ) -> Set[str]:
+        self, ids: Optional[list[str]] = None, where: Optional[dict[str, any]] = None, limit: Optional[int] = None
+    ) -> set[str]:
         """
         Get existing doc ids present in vector database
 
         :param ids: _list of doc ids to check for existence
-        :type ids: List[str]
+        :type ids: list[str]
         :param where: to filter data
-        :type where: Dict[str, any]
+        :type where: dict[str, any]
         :return: ids
-        :type: Set[str]
+        :type: set[str]
         """
         query = {}
         if ids:
@@ -96,9 +96,9 @@ class OpenSearchDB(BaseVectorDB):
         else:
             query["query"] = {"bool": {"must": []}}
 
-        if "app_id" in where:
-            app_id = where["app_id"]
-            query["query"]["bool"]["must"].append({"term": {"metadata.app_id.keyword": app_id}})
+        if where:
+            for key, value in where.items():
+                query["query"]["bool"]["must"].append({"term": {f"metadata.{key}.keyword": value}})
 
         # OpenSearch syntax is different from Elasticsearch
         response = self.client.search(index=self._get_index(), body=query, _source=True, size=limit)
@@ -114,22 +114,10 @@ class OpenSearchDB(BaseVectorDB):
             result["metadatas"].append({"doc_id": doc_id})
         return result
 
-    def add(
-        self,
-        embeddings: List[List[str]],
-        documents: List[str],
-        metadatas: List[object],
-        ids: List[str],
-        **kwargs: Optional[Dict[str, any]],
-    ):
-        """Add data in vector database.
+    def add(self, documents: list[str], metadatas: list[object], ids: list[str], **kwargs: Optional[dict[str, any]]):
+        """Adds documents to the opensearch index"""
 
-        Args:
-            embeddings (List[List[str]]): List of embeddings to add.
-            documents (List[str]): List of texts to add.
-            metadatas (List[object]): List of metadata associated with docs.
-            ids (List[str]): IDs of docs.
-        """
+        embeddings = self.embedder.embedding_fn(documents)
         for batch_start in tqdm(range(0, len(documents), self.BATCH_SIZE), desc="Inserting batches in opensearch"):
             batch_end = batch_start + self.BATCH_SIZE
             batch_documents = documents[batch_start:batch_end]
@@ -156,26 +144,26 @@ class OpenSearchDB(BaseVectorDB):
 
     def query(
         self,
-        input_query: List[str],
+        input_query: list[str],
         n_results: int,
-        where: Dict[str, any],
+        where: dict[str, any],
         citations: bool = False,
-        **kwargs: Optional[Dict[str, Any]],
-    ) -> Union[List[Tuple[str, Dict]], List[str]]:
+        **kwargs: Optional[dict[str, Any]],
+    ) -> Union[list[tuple[str, dict]], list[str]]:
         """
-        query contents from vector data base based on vector similarity
+        query contents from vector database based on vector similarity
 
         :param input_query: list of query string
-        :type input_query: List[str]
+        :type input_query: list[str]
         :param n_results: no of similar documents to fetch from database
         :type n_results: int
         :param where: Optional. to filter data
-        :type where: Dict[str, any]
+        :type where: dict[str, any]
         :param citations: we use citations boolean param to return context along with the answer.
         :type citations: bool, default is False.
         :return: The content of the document that matched your query,
         along with url of the source and doc_id (if citations flag is true)
-        :rtype: List[str], if citations=False, otherwise List[Tuple[str, str, str]]
+        :rtype: list[str], if citations=False, otherwise list[tuple[str, str, str]]
         """
         embeddings = OpenAIEmbeddings()
         docsearch = OpenSearchVectorSearch(
@@ -188,9 +176,11 @@ class OpenSearchDB(BaseVectorDB):
         )
 
         pre_filter = {"match_all": {}}  # default
-        if "app_id" in where:
-            app_id = where["app_id"]
-            pre_filter = {"bool": {"must": [{"term": {"metadata.app_id.keyword": app_id}}]}}
+        if len(where) > 0:
+            pre_filter = {"bool": {"must": []}}
+            for key, value in where.items():
+                pre_filter["bool"]["must"].append({"term": {f"metadata.{key}.keyword": value}})
+
         docs = docsearch.similarity_search_with_score(
             input_query,
             search_type="script_scoring",
@@ -248,10 +238,9 @@ class OpenSearchDB(BaseVectorDB):
 
     def delete(self, where):
         """Deletes a document from the OpenSearch index"""
-        if "doc_id" not in where:
-            raise ValueError("doc_id is required to delete a document")
-
-        query = {"query": {"bool": {"must": [{"term": {"metadata.doc_id": where["doc_id"]}}]}}}
+        query = {"query": {"bool": {"must": []}}}
+        for key, value in where.items():
+            query["query"]["bool"]["must"].append({"term": {f"metadata.{key}.keyword": value}})
         self.client.delete_by_query(index=self._get_index(), body=query)
 
     def _get_index(self) -> str:

@@ -2,15 +2,16 @@ import hashlib
 
 from embedchain.helpers.json_serializable import register_deserializable
 from embedchain.loaders.base_loader import BaseLoader
-from embedchain.utils import clean_string
+from embedchain.utils.misc import clean_string
 
 
 @register_deserializable
 class UnstructuredLoader(BaseLoader):
     def load_data(self, url):
-        """Load data from a Unstructured file."""
+        """Load data from an Unstructured file."""
         try:
-            from langchain.document_loaders import UnstructuredFileLoader
+            from langchain_community.document_loaders import \
+                UnstructuredFileLoader
         except ImportError:
             raise ImportError(
                 'Unstructured file requires extra dependencies. Install with `pip install --upgrade "embedchain[dataloaders]"`'  # noqa: E501
@@ -25,12 +26,12 @@ class UnstructuredLoader(BaseLoader):
         for page in pages:
             content = page.page_content
             content = clean_string(content)
-            meta_data = page.metadata
-            meta_data["url"] = url
+            metadata = page.metadata
+            metadata["url"] = url
             data.append(
                 {
                     "content": content,
-                    "meta_data": meta_data,
+                    "meta_data": metadata,
                 }
             )
             all_content.append(content)

@@ -1,14 +1,14 @@
 import hashlib
 
 try:
-    from langchain.document_loaders import YoutubeLoader
+    from langchain_community.document_loaders import YoutubeLoader
 except ImportError:
     raise ImportError(
         'YouTube video requires extra dependencies. Install with `pip install --upgrade "embedchain[dataloaders]"`'
     ) from None
 from embedchain.helpers.json_serializable import register_deserializable
 from embedchain.loaders.base_loader import BaseLoader
-from embedchain.utils import clean_string
+from embedchain.utils.misc import clean_string
 
 
 @register_deserializable
@@ -22,13 +22,13 @@ class YoutubeVideoLoader(BaseLoader):
             raise ValueError(f"No data found for url: {url}")
         content = doc[0].page_content
         content = clean_string(content)
-        meta_data = doc[0].metadata
-        meta_data["url"] = url
+        metadata = doc[0].metadata
+        metadata["url"] = url
 
         output.append(
             {
                 "content": content,
-                "meta_data": meta_data,
+                "meta_data": metadata,
             }
         )
         doc_id = hashlib.sha256((content + url).encode()).hexdigest()

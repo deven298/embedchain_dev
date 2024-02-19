@@ -1,13 +1,15 @@
 import ast
+import concurrent.futures
 import json
 import logging
 import os
 import sqlite3
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional, Union
 
 import requests
 import yaml
+from tqdm import tqdm
 
 from embedchain.cache import (Config, ExactMatchEvaluation,
                               SearchDistanceEvaluation, cache,
@@ -18,16 +20,20 @@ from embedchain.constants import SQLITE_PATH
 from embedchain.embedchain import EmbedChain
 from embedchain.embedder.base import BaseEmbedder
 from embedchain.embedder.openai import OpenAIEmbedder
+from embedchain.evaluation.base import BaseMetric
+from embedchain.evaluation.metrics import (AnswerRelevance, ContextRelevance,
+                                           Groundedness)
 from embedchain.factory import EmbedderFactory, LlmFactory, VectorDBFactory
 from embedchain.helpers.json_serializable import register_deserializable
 from embedchain.llm.base import BaseLlm
 from embedchain.llm.openai import OpenAILlm
 from embedchain.telemetry.posthog import AnonymousTelemetry
-from embedchain.utils import validate_config
+from embedchain.utils.evaluation import EvalData, EvalMetric
+from embedchain.utils.misc import validate_config
 from embedchain.vectordb.base import BaseVectorDB
 from embedchain.vectordb.chroma import ChromaDB
 
-# Setup the user directory if doesn't exist already
+# Set up the user directory if it doesn't exist already
 Client.setup_dir()
 
 
@@ -244,30 +250,6 @@ class App(EmbedChain):
         r.raise_for_status()
         return r.json()
 
-    def search(self, query, num_documents=3):
-        """
-        Search for similar documents related to the query in the vector database.
-        """
-        # Send anonymous telemetry
-        self.telemetry.capture(event_name="search", properties=self._telemetry_props)
-
-        # TODO: Search will call the endpoint rather than fetching the data from the db itself when deploy=True.
-        if self.id is None:
-            where = {"app_id": self.local_id}
-            context = self.db.query(
-                query,
-                n_results=num_documents,
-                where=where,
-                citations=True,
-            )
-            result = []
-            for c in context:
-                result.append({"context": c[0], "metadata": c[1]})
-            return result
-        else:
-            # Make API call to the backend to get the results
-            NotImplementedError("Search is not implemented yet for the prod mode.")
-
     def _upload_file_to_presigned_url(self, presigned_url, file_path):
         try:
             with open(file_path, "rb") as file:
@@ -364,7 +346,7 @@ class App(EmbedChain):
     def from_config(
         cls,
         config_path: Optional[str] = None,
-        config: Optional[Dict[str, Any]] = None,
+        config: Optional[dict[str, Any]] = None,
         auto_deploy: bool = False,
         yaml_path: Optional[str] = None,
     ):
@@ -374,7 +356,7 @@ class App(EmbedChain):
         :param config_path: Path to the YAML or JSON configuration file.
         :type config_path: Optional[str]
         :param config: A dictionary containing the configuration.
-        :type config: Optional[Dict[str, Any]]
+        :type config: Optional[dict[str, Any]]
         :param auto_deploy: Whether to deploy the pipeline automatically, defaults to False
         :type auto_deploy: bool, optional
         :param yaml_path: (Deprecated) Path to the YAML configuration file. Use config_path instead.
@@ -393,7 +375,7 @@ class App(EmbedChain):
 
         if config_path:
             file_extension = os.path.splitext(config_path)[1]
-            with open(config_path, "r") as file:
+            with open(config_path, "r", encoding="UTF-8") as file:
                 if file_extension in [".yaml", ".yml"]:
                     config_data = yaml.safe_load(file)
                 elif file_extension == ".json":
@@ -455,3 +437,103 @@ class App(EmbedChain):
             chunker=chunker_config_data,
             cache_config=cache_config,
         )
+
+    def _eval(self, dataset: list[EvalData], metric: Union[BaseMetric, str]):
+        """
+        Evaluate the app on a dataset for a given metric.
+        """
+        metric_str = metric.name if isinstance(metric, BaseMetric) else metric
+        eval_class_map = {
+            EvalMetric.CONTEXT_RELEVANCY.value: ContextRelevance,
+            EvalMetric.ANSWER_RELEVANCY.value: AnswerRelevance,
+            EvalMetric.GROUNDEDNESS.value: Groundedness,
+        }
+
+        if metric_str in eval_class_map:
+            return eval_class_map[metric_str]().evaluate(dataset)
+
+        # Handle the case for custom metrics
+        if isinstance(metric, BaseMetric):
+            return metric.evaluate(dataset)
+        else:
+            raise ValueError(f"Invalid metric: {metric}")
+
+    def evaluate(
+        self,
+        questions: Union[str, list[str]],
+        metrics: Optional[list[Union[BaseMetric, str]]] = None,
+        num_workers: int = 4,
+    ):
+        """
+        Evaluate the app on a question.
+
+        param: questions: A question or a list of questions to evaluate.
+        type: questions: Union[str, list[str]]
+        param: metrics: A list of metrics to evaluate. Defaults to all metrics.
+        type: metrics: Optional[list[Union[BaseMetric, str]]]
+        param: num_workers: Number of workers to use for parallel processing.
+        type: num_workers: int
+        return: A dictionary containing the evaluation results.
+        rtype: dict
+        """
+        if "OPENAI_API_KEY" not in os.environ:
+            raise ValueError("Please set the OPENAI_API_KEY environment variable with permission to use `gpt4` model.")
+
+        queries, answers, contexts = [], [], []
+        if isinstance(questions, list):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+                future_to_data = {executor.submit(self.query, q, citations=True): q for q in questions}
+                for future in tqdm(
+                    concurrent.futures.as_completed(future_to_data),
+                    total=len(future_to_data),
+                    desc="Getting answer and contexts for questions",
+                ):
+                    question = future_to_data[future]
+                    queries.append(question)
+                    answer, context = future.result()
+                    answers.append(answer)
+                    contexts.append(list(map(lambda x: x[0], context)))
+        else:
+            answer, context = self.query(questions, citations=True)
+            queries = [questions]
+            answers = [answer]
+            contexts = [list(map(lambda x: x[0], context))]
+
+        metrics = metrics or [
+            EvalMetric.CONTEXT_RELEVANCY.value,
+            EvalMetric.ANSWER_RELEVANCY.value,
+            EvalMetric.GROUNDEDNESS.value,
+        ]
+
+        logging.info(f"Collecting data from {len(queries)} questions for evaluation...")
+        dataset = []
+        for q, a, c in zip(queries, answers, contexts):
+            dataset.append(EvalData(question=q, answer=a, contexts=c))
+
+        logging.info(f"Evaluating {len(dataset)} data points...")
+        result = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            future_to_metric = {executor.submit(self._eval, dataset, metric): metric for metric in metrics}
+            for future in tqdm(
+                concurrent.futures.as_completed(future_to_metric),
+                total=len(future_to_metric),
+                desc="Evaluating metrics",
+            ):
+                metric = future_to_metric[future]
+                if isinstance(metric, BaseMetric):
+                    result[metric.name] = future.result()
+                else:
+                    result[metric] = future.result()
+
+        if self.config.collect_metrics:
+            telemetry_props = self._telemetry_props
+            metrics_names = []
+            for metric in metrics:
+                if isinstance(metric, BaseMetric):
+                    metrics_names.append(metric.name)
+                else:
+                    metrics_names.append(metric)
+            telemetry_props["metrics"] = metrics_names
+            self.telemetry.capture(event_name="evaluate", properties=telemetry_props)
+
+        return result

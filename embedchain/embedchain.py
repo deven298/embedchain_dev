@@ -2,7 +2,7 @@ import hashlib
 import json
 import logging
 import sqlite3
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional, Union
 
 from dotenv import load_dotenv
 from langchain.docstore.document import Document
@@ -22,7 +22,7 @@ from embedchain.loaders.base_loader import BaseLoader
 from embedchain.models.data_type import (DataType, DirectDataType,
                                          IndirectDataType, SpecialDataType)
 from embedchain.telemetry.posthog import AnonymousTelemetry
-from embedchain.utils import detect_datatype, is_valid_json_string
+from embedchain.utils.misc import detect_datatype, is_valid_json_string
 from embedchain.vectordb.base import BaseVectorDB
 
 load_dotenv()
@@ -84,7 +84,7 @@ class EmbedChain(JSONSerializable):
         # Attributes that aren't subclass related.
         self.user_asks = []
 
-        self.chunker: ChunkerConfig = None
+        self.chunker: Optional[ChunkerConfig] = None
         # Send anonymous telemetry
         self._telemetry_props = {"class": self.__class__.__name__}
         self.telemetry = AnonymousTelemetry(enabled=self.config.collect_metrics)
@@ -134,12 +134,12 @@ class EmbedChain(JSONSerializable):
         self,
         source: Any,
         data_type: Optional[DataType] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         config: Optional[AddConfig] = None,
         dry_run=False,
         loader: Optional[BaseLoader] = None,
         chunker: Optional[BaseChunker] = None,
-        **kwargs: Optional[Dict[str, Any]],
+        **kwargs: Optional[dict[str, Any]],
     ):
         """
         Adds the data from the given URL to the vector db.
@@ -152,7 +152,7 @@ class EmbedChain(JSONSerializable):
         defaults to None
         :type data_type: Optional[DataType], optional
         :param metadata: Metadata associated with the data source., defaults to None
-        :type metadata: Optional[Dict[str, Any]], optional
+        :type metadata: Optional[dict[str, Any]], optional
         :param config: The `AddConfig` instance to use as configuration options., defaults to None
         :type config: Optional[AddConfig], optional
         :raises ValueError: Invalid data type
@@ -237,46 +237,6 @@ class EmbedChain(JSONSerializable):
 
         return source_hash
 
-    def add_local(
-        self,
-        source: Any,
-        data_type: Optional[DataType] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        config: Optional[AddConfig] = None,
-        **kwargs: Optional[Dict[str, Any]],
-    ):
-        """
-        Adds the data from the given URL to the vector db.
-        Loads the data, chunks it, create embedding for each chunk
-        and then stores the embedding to vector database.
-
-        Warning:
-            This method is deprecated and will be removed in future versions. Use `add` instead.
-
-        :param source: The data to embed, can be a URL, local file or raw content, depending on the data type.
-        :type source: Any
-        :param data_type: Automatically detected, but can be forced with this argument. The type of the data to add,
-        defaults to None
-        :type data_type: Optional[DataType], optional
-        :param metadata: Metadata associated with the data source., defaults to None
-        :type metadata: Optional[Dict[str, Any]], optional
-        :param config: The `AddConfig` instance to use as configuration options., defaults to None
-        :type config: Optional[AddConfig], optional
-        :raises ValueError: Invalid data type
-        :return: source_hash, a md5-hash of the source, in hexadecimal representation.
-        :rtype: str
-        """
-        logging.warning(
-            "The `add_local` method is deprecated and will be removed in future versions. Please use the `add` method for both local and remote files."  # noqa: E501
-        )
-        return self.add(
-            source=source,
-            data_type=data_type,
-            metadata=metadata,
-            config=config,
-            **kwargs,
-        )
-
     def _get_existing_doc_id(self, chunker: BaseChunker, src: Any):
         """
         Get id of existing document for a given source, based on the data type
@@ -290,7 +250,7 @@ class EmbedChain(JSONSerializable):
             #   Or it's different, then it will be added as a new text.
             return None
         elif chunker.data_type.value in [item.value for item in IndirectDataType]:
-            # These types have a indirect source reference
+            # These types have an indirect source reference
             # As long as the reference is the same, they can be updated.
             where = {"url": src}
             if chunker.data_type == DataType.JSON and is_valid_json_string(src):
@@ -340,11 +300,11 @@ class EmbedChain(JSONSerializable):
         loader: BaseLoader,
         chunker: BaseChunker,
         src: Any,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         source_hash: Optional[str] = None,
         add_config: Optional[AddConfig] = None,
         dry_run=False,
-        **kwargs: Optional[Dict[str, Any]],
+        **kwargs: Optional[dict[str, Any]],
     ):
         """
         Loads the data from the given URL, chunks it, and adds it to database.
@@ -357,7 +317,7 @@ class EmbedChain(JSONSerializable):
         :param source_hash: Hexadecimal hash of the source.
         :param dry_run: Optional. A dry run returns chunks and doesn't update DB.
         :type dry_run: bool, defaults to False
-        :return: (List) documents (embedded text), (List) metadata, (list) ids, (int) number of chunks
+        :return: (list) documents (embedded text), (list) metadata, (list) ids, (int) number of chunks
         """
         existing_doc_id = self._get_existing_doc_id(chunker=chunker, src=src)
         app_id = self.config.id if self.config is not None else None
@@ -369,7 +329,7 @@ class EmbedChain(JSONSerializable):
         metadatas = embeddings_data["metadatas"]
         ids = embeddings_data["ids"]
         new_doc_id = embeddings_data["doc_id"]
-        embeddings = embeddings_data.get("embeddings")
+
         if existing_doc_id and existing_doc_id == new_doc_id:
             print("Doc content has not changed. Skipping creating chunks and embeddings")
             return [], [], [], 0
@@ -433,19 +393,31 @@ class EmbedChain(JSONSerializable):
         # Count before, to calculate a delta in the end.
         chunks_before_addition = self.db.count()
 
-        self.db.add(
-            embeddings=embeddings,
-            documents=documents,
-            metadatas=metadatas,
-            ids=ids,
-            **kwargs,
-        )
-        count_new_chunks = self.db.count() - chunks_before_addition
+        # Filter out empty documents and ensure they meet the API requirements
+        valid_documents = [doc for doc in documents if doc and isinstance(doc, str)]
 
-        print((f"Successfully saved {src} ({chunker.data_type}). New chunks count: {count_new_chunks}"))
+        documents = valid_documents
+
+        # Chunk documents into batches of 2048 and handle each batch
+        # helps wigth large loads of embeddings  that hit OpenAI limits
+        document_batches = [documents[i : i + 2048] for i in range(0, len(documents), 2048)]
+        for batch in document_batches:
+            try:
+                # Add only valid batches
+                if batch:
+                    self.db.add(documents=batch, metadatas=metadatas, ids=ids, **kwargs)
+            except Exception as e:
+                print(f"Failed to add batch due to a bad request: {e}")
+                # Handle the error, e.g., by logging, retrying, or skipping
+                pass
+
+        count_new_chunks = self.db.count() - chunks_before_addition
+        print(f"Successfully saved {src} ({chunker.data_type}). New chunks count: {count_new_chunks}")
+
         return list(documents), metadatas, ids, count_new_chunks
 
-    def _format_result(self, results):
+    @staticmethod
+    def _format_result(results):
         return [
             (Document(page_content=result[0], metadata=result[1] or {}), result[2])
             for result in zip(
@@ -461,8 +433,8 @@ class EmbedChain(JSONSerializable):
         config: Optional[BaseLlmConfig] = None,
         where=None,
         citations: bool = False,
-        **kwargs: Optional[Dict[str, Any]],
-    ) -> Union[List[Tuple[str, str, str]], List[str]]:
+        **kwargs: Optional[dict[str, Any]],
+    ) -> Union[list[tuple[str, str, str]], list[str]]:
         """
         Queries the vector database based on the given input query.
         Gets relevant doc based on the query
@@ -476,7 +448,7 @@ class EmbedChain(JSONSerializable):
         :param citations: A boolean to indicate if db should fetch citation source
         :type citations: bool
         :return: List of contents of the document that matched your query
-        :rtype: List[str]
+        :rtype: list[str]
         """
         query_config = config or self.llm.config
         if where is not None:
@@ -504,10 +476,10 @@ class EmbedChain(JSONSerializable):
         input_query: str,
         config: BaseLlmConfig = None,
         dry_run=False,
-        where: Optional[Dict] = None,
+        where: Optional[dict] = None,
         citations: bool = False,
-        **kwargs: Dict[str, Any],
-    ) -> Union[Tuple[str, List[Tuple[str, Dict]]], str]:
+        **kwargs: dict[str, Any],
+    ) -> Union[tuple[str, list[tuple[str, dict]]], str]:
         """
         Queries the vector database based on the given input query.
         Gets relevant doc based on the query and then passes it to an
@@ -522,13 +494,13 @@ class EmbedChain(JSONSerializable):
         the LLM. The purpose is to test the prompt, not the response., defaults to False
         :type dry_run: bool, optional
         :param where: A dictionary of key-value pairs to filter the database results., defaults to None
-        :type where: Optional[Dict[str, str]], optional
+        :type where: Optional[dict[str, str]], optional
         :param kwargs: To read more params for the query function. Ex. we use citations boolean
         param to return context along with the answer
-        :type kwargs: Dict[str, Any]
+        :type kwargs: dict[str, Any]
         :return: The answer to the query, with citations if the citation flag is True
         or the dry run result
-        :rtype: str, if citations is False, otherwise Tuple[str,List[Tuple[str,str,str]]]
+        :rtype: str, if citations is False, otherwise tuple[str, list[tuple[str,str,str]]]
         """
         contexts = self._retrieve_from_database(
             input_query=input_query, config=config, where=where, citations=citations, **kwargs
@@ -569,10 +541,10 @@ class EmbedChain(JSONSerializable):
         config: Optional[BaseLlmConfig] = None,
         dry_run=False,
         session_id: str = "default",
-        where: Optional[Dict[str, str]] = None,
+        where: Optional[dict[str, str]] = None,
         citations: bool = False,
-        **kwargs: Dict[str, Any],
-    ) -> Union[Tuple[str, List[Tuple[str, Dict]]], str]:
+        **kwargs: dict[str, Any],
+    ) -> Union[tuple[str, list[tuple[str, dict]]], str]:
         """
         Queries the vector database on the given input query.
         Gets relevant doc based on the query and then passes it to an
@@ -591,13 +563,13 @@ class EmbedChain(JSONSerializable):
         :param session_id: The session id to use for chat history, defaults to 'default'.
         :type session_id: Optional[str], optional
         :param where: A dictionary of key-value pairs to filter the database results., defaults to None
-        :type where: Optional[Dict[str, str]], optional
+        :type where: Optional[dict[str, str]], optional
         :param kwargs: To read more params for the query function. Ex. we use citations boolean
         param to return context along with the answer
-        :type kwargs: Dict[str, Any]
+        :type kwargs: dict[str, Any]
         :return: The answer to the query, with citations if the citation flag is True
         or the dry run result
-        :rtype: str, if citations is False, otherwise Tuple[str,List[Tuple[str,str,str]]]
+        :rtype: str, if citations is False, otherwise tuple[str, list[tuple[str,str,str]]]
         """
         contexts = self._retrieve_from_database(
             input_query=input_query, config=config, where=where, citations=citations, **kwargs
@@ -639,6 +611,41 @@ class EmbedChain(JSONSerializable):
         else:
             return answer
 
+    def search(self, query, num_documents=3, where=None, raw_filter=None):
+        """
+        Search for similar documents related to the query in the vector database.
+
+        Args:
+            query (str): The query to use.
+            num_documents (int, optional): Number of similar documents to fetch. Defaults to 3.
+            where (dict[str, any], optional): Filter criteria for the search.
+            raw_filter (dict[str, any], optional): Advanced raw filter criteria for the search.
+
+        Raises:
+            ValueError: If both `raw_filter` and `where` are used simultaneously.
+
+        Returns:
+            list[dict]: A list of dictionaries, each containing the 'context' and 'metadata' of a document.
+        """
+        # Send anonymous telemetry
+        self.telemetry.capture(event_name="search", properties=self._telemetry_props)
+
+        if raw_filter and where:
+            raise ValueError("You can't use both `raw_filter` and `where` together.")
+
+        filter_type = "raw_filter" if raw_filter else "where"
+        filter_criteria = raw_filter if raw_filter else where
+
+        params = {
+            "input_query": query,
+            "n_results": num_documents,
+            "citations": True,
+            "app_id": self.config.id,
+            filter_type: filter_criteria,
+        }
+
+        return [{"context": c[0], "metadata": c[1]} for c in self.db.query(**params)]
+
     def set_collection_name(self, name: str):
         """
         Set the name of the collection. A collection is an isolated space for vectors.
@@ -654,18 +661,6 @@ class EmbedChain(JSONSerializable):
         # TODO: Check whether it is necessary to assign to the `self.collection` attribute,
         # since the main purpose is the creation.
 
-    def count(self) -> int:
-        """
-        Count the number of embeddings.
-
-        DEPRECATED IN FAVOR OF `db.count()`
-
-        :return: The number of embeddings.
-        :rtype: int
-        """
-        logging.warning("DEPRECATION WARNING: Please use `app.db.count()` instead of `app.count()`.")
-        return self.db.count()
-
     def reset(self):
         """
         Resets the database. Deletes all embeddings irreversibly.
@@ -674,13 +669,42 @@ class EmbedChain(JSONSerializable):
         self.db.reset()
         self.cursor.execute("DELETE FROM data_sources WHERE pipeline_id = ?", (self.config.id,))
         self.connection.commit()
-        self.delete_chat_history()
+        self.delete_all_chat_history(app_id=self.config.id)
         # Send anonymous telemetry
         self.telemetry.capture(event_name="reset", properties=self._telemetry_props)
 
-    def get_history(self, num_rounds: int = 10, display_format: bool = True):
-        return self.llm.memory.get(app_id=self.config.id, num_rounds=num_rounds, display_format=display_format)
+    def get_history(
+        self,
+        num_rounds: int = 10,
+        display_format: bool = True,
+        session_id: Optional[str] = "default",
+        fetch_all: bool = False,
+    ):
+        history = self.llm.memory.get(
+            app_id=self.config.id,
+            session_id=session_id,
+            num_rounds=num_rounds,
+            display_format=display_format,
+            fetch_all=fetch_all,
+        )
+        return history
 
-    def delete_chat_history(self, session_id: str = "default"):
+    def delete_session_chat_history(self, session_id: str = "default"):
         self.llm.memory.delete(app_id=self.config.id, session_id=session_id)
         self.llm.update_history(app_id=self.config.id)
+
+    def delete_all_chat_history(self, app_id: str):
+        self.llm.memory.delete(app_id=app_id)
+        self.llm.update_history(app_id=app_id)
+
+    def delete(self, source_id: str):
+        """
+        Deletes the data from the database.
+        :param source_hash: The hash of the source.
+        :type source_hash: str
+        """
+        self.db.delete(where={"hash": source_id})
+        logging.info(f"Successfully deleted {source_id}")
+        # Send anonymous telemetry
+        if self.config.collect_metrics:
+            self.telemetry.capture(event_name="delete", properties=self._telemetry_props)
